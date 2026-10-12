@@ -1,102 +1,203 @@
 import os
 import base64
 import requests
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app) # Allow cross-origin requests if tested from web clients
+CORS(app)
 
-OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
+GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_API_URL = (
+    "https://generativelanguage.googleapis.com/v1beta/"
+    f"models/{GEMINI_MODEL}:generateContent"
+)
 
-@app.route('/api/analyze-photo', methods=['POST'])
+def get_api_keys():
+    """
+    Returns a list of API keys.
+    Supports GEMINI_API_KEYS (comma separated) or GEMINI_API_KEY.
+    """
+    keys_str = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY")
+    if not keys_str:
+        return []
+    return [k.strip() for k in keys_str.split(",") if k.strip()]
+
+@app.route("/api/analyze-photo", methods=["POST"])
 def analyze_photo():
-    api_key = os.environ.get("OPENAI_API_KEY")
+    api_keys = get_api_keys()
 
-    # 1. Configuration check
-    if not api_key:
-        return jsonify({"response": None, "error": "OpenAI API key is not configured on the server."}), 500
+    if not api_keys:
+        return jsonify({
+            "response": None,
+            "error": "Gemini API keys are not configured."
+        }), 500
 
-    # 2. Extract Multipart Request data
-    if 'image' not in request.files:
-        return jsonify({"response": None, "error": "No image uploaded"}), 400
+    if "image" not in request.files:
+        return jsonify({
+            "response": None,
+            "error": "No image uploaded."
+        }), 400
 
-    file = request.files['image']
-    if file.filename == '':
-        return jsonify({"response": None, "error": "Empty file name"}), 400
+    file = request.files["image"]
 
-    prompt = request.form.get('prompt', 'Please analyze this image.')
+    if not file.filename:
+        return jsonify({
+            "response": None,
+            "error": "Empty file name."
+        }), 400
 
-    try:
-        # 3. Read image and encode to base64 for OpenAI Vision
-        image_bytes = file.read()
-        base64_image = base64.b64encode(image_bytes).decode('utf-8')
-        mime_type = file.mimetype or 'image/jpeg'
+    image_bytes = file.read()
 
-        print(f"Processing request... Image size: {len(image_bytes)} bytes")
+    if not image_bytes:
+        return jsonify({
+            "response": None,
+            "error": "Uploaded image is empty."
+        }), 400
 
-        # 4. Secure server-to-server HTTP call to OpenAI via requests
-        headers = {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}"
-        }
+    mime_type = file.mimetype or "image/jpeg"
 
-        payload = {
-            "model": "gpt-4o",
-            "messages": [
+    if not mime_type.startswith("image/"):
+        return jsonify({
+            "response": None,
+            "error": "Uploaded file must be an image."
+        }), 400
+
+    prompt = request.form.get(
+        "prompt",
+        "Please analyze this image."
+    )
+
+    print(f"Processing image: {len(image_bytes)} bytes")
+
+    payload = {
+        "contents": [{
+            "parts": [
+                {"text": prompt},
                 {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{base64_image}"
-                            }
-                        }
-                    ]
+                    "inline_data": {
+                        "mime_type": mime_type,
+                        "data": base64.b64encode(
+                            image_bytes
+                        ).decode("utf-8")
+                    }
                 }
-            ],
-            "max_tokens": 500
+            ]
+        }],
+        "generationConfig": {
+            "maxOutputTokens": 500
         }
+    }
 
-        # Make the request to OpenAI with a timeout
-        response = requests.post(OPENAI_API_URL, headers=headers, json=payload, timeout=60)
+    last_error_message = "Unknown error"
+    last_status_code = 502
 
-        # Raise an exception for HTTP errors (4xx, 5xx)
-        response.raise_for_status()
+    # Loop through configured keys until one succeeds
+    for attempt, api_key in enumerate(api_keys):
+        try:
+            response = requests.post(
+                GEMINI_API_URL,
+                params={"key": api_key},
+                json=payload,
+                timeout=60
+            )
 
-        # 5. Format success response matching the Android Client contract
-        response_json = response.json()
-        ai_text = response_json['choices'][0]['message']['content']
-        return jsonify({"response": ai_text, "error": None})
+            if not response.ok:
+                try:
+                    data = response.json()
+                    error = data.get("error", {})
+                    message = error.get(
+                        "message",
+                        f"Gemini returned HTTP {response.status_code}"
+                    )
+                    print(f"Gemini API error (Key {attempt + 1}) {response.status_code}: {message}")
+                except ValueError:
+                    message = f"Gemini returned HTTP {response.status_code}"
 
-    except requests.exceptions.Timeout:
-        print("API Error: Request to OpenAI timed out.")
-        return jsonify({"response": None, "error": "OpenAI API request timed out."}), 504
+                status = response.status_code
+                last_error_message = message
+                last_status_code = status
 
-    except requests.exceptions.RequestException as e:
-        print(f"API Request Error: {e}")
-        error_msg = str(e)
-        # Try to parse the OpenAI error message if available
-        if e.response is not None:
-            try:
-                error_data = e.response.json()
-                if 'error' in error_data and 'message' in error_data['error']:
-                    error_msg = error_data['error']['message']
-            except Exception:
-                pass
-        return jsonify({"response": None, "error": f"Failed to communicate with OpenAI: {error_msg}"}), 502
+                # If Bad Request (400), it's likely a payload issue, no point retrying
+                if status == 400:
+                    return jsonify({
+                        "response": None,
+                        "error": message
+                    }), 400
 
-    except Exception as e:
-        print(f"Server Error: {e}")
-        # Format error response matching Android Client contract
-        return jsonify({"response": None, "error": f"Failed to process image: {str(e)}"}), 500
+                # For 429 (Quota), 401/403 (Auth), 5xx (Server Error), attempt next key
+                continue
 
-if __name__ == '__main__':
-    # Listen on all network interfaces to allow the Android phone to connect over LAN
-    app.run(host='0.0.0.0', port=5000, debug=True)
+            # Parse successful response
+            data = response.json()
+            candidates = data.get("candidates", [])
+
+            if not candidates:
+                print("Gemini returned no candidates.")
+                return jsonify({
+                    "response": None,
+                    "error": (
+                        "Gemini returned no answer. "
+                        "The image or prompt may have been blocked."
+                    )
+                }), 502
+
+            parts = candidates[0].get("content", {}).get("parts", [])
+            ai_text = "\n".join(
+                part["text"]
+                for part in parts
+                if "text" in part
+            ).strip()
+
+            if not ai_text:
+                return jsonify({
+                    "response": None,
+                    "error": "Gemini returned an empty response."
+                }), 502
+
+            return jsonify({
+                "response": ai_text,
+                "error": None
+            })
+
+        except requests.exceptions.Timeout:
+            print(f"Key {attempt + 1} timed out.")
+            last_error_message = "Gemini API request timed out."
+            last_status_code = 504
+            continue
+
+        except requests.exceptions.RequestException as exc:
+            print(f"Key {attempt + 1} network error: {type(exc).__name__}")
+            last_error_message = "Could not connect to Gemini API."
+            last_status_code = 502
+            continue
+
+        except Exception as exc:
+            print(f"Key {attempt + 1} backend error: {type(exc).__name__}: {exc}")
+            last_error_message = "Unexpected backend error."
+            last_status_code = 500
+            continue
+
+    # If we exited the loop, all available keys were exhausted or failed.
+    if last_status_code == 429:
+        final_error = (
+            "Gemini API rate limit or quota reached on all configured projects. "
+            "Check Google AI Studio usage and limits."
+        )
+    elif last_status_code in [401, 403]:
+        final_error = "Configured API keys are invalid or lack permissions."
+    else:
+        final_error = f"Failed to get response after trying all keys: {last_error_message}"
+
+    return jsonify({
+        "response": None,
+        "error": final_error
+    }), last_status_code
+
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=5000, debug=False)

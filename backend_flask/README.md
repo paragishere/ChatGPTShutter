@@ -1,6 +1,12 @@
-# ChatGPTShutter Flask Backend
+# Dont Touch (ChatGPTShutter) Flask Backend
 
-This is the secure backend for the ChatGPTShutter Android app. It handles the image analysis requests, securely communicates with the OpenAI REST API using your server-side API key, and returns the response to the mobile app.
+This is the secure backend for the Dont Touch Android app. It handles image analysis requests, securely communicates with the Gemini REST API using your server-side API keys, and returns the response to the mobile app.
+
+## Multi-Account / Multi-Project Support
+This backend supports configuring multiple Gemini API credentials. If a key hits a transient failure or a 429 Rate Limit/Quota Exhaustion error, the server safely attempts the request using the next key in the list.
+
+**Important Terms of Service Warning:**
+Do not assume separate API keys provide separate quotas if they belong to the same Google Cloud or AI Studio project. The multi-key configuration is intended for load-balancing across *legitimate, distinct eligible projects* (e.g., separating production traffic across different billed projects). Do not implement account rotation to evade provider-imposed limits or enforcement; this violates Google's terms of service.
 
 ## Setup Instructions (Windows PowerShell)
 
@@ -28,7 +34,7 @@ This is the secure backend for the ChatGPTShutter Android app. It handles the im
    ```powershell
    copy .env.example .env
    ```
-   Open the `.env` file in Notepad and replace `YOUR_ACTUAL_OPENAI_KEY_HERE` with your real OpenAI API key.
+   Open the `.env` file in Notepad and replace the placeholder keys with your real Gemini API keys.
 
 6. **Start the server:**
    ```powershell
@@ -36,26 +42,7 @@ This is the secure backend for the ChatGPTShutter Android app. It handles the im
    ```
    *Note: Ensure your Windows Firewall prompts allow Python to communicate on private networks, so your phone can reach it.*
 
-## Local Phone Testing (From Laptop)
-
-To test with a physical Android device on the same Wi-Fi network:
-
-1. **Find your Laptop's LAN IP Address:**
-   Open a new PowerShell window and run:
-   ```powershell
-   ipconfig | findstr IPv4
-   ```
-   Look for the IP address starting with `192.168.x.x` or `10.x.x.x`.
-
-2. **Configure the Android App:**
-   Open `ApiClient.kt` in Android Studio and set the URL using the IP you found. For example:
-   ```kotlin
-   const val BACKEND_URL = "http://192.168.1.100:5000"
-   ```
-
 ## Termux (Android) Setup Instructions
-
-If you are running this backend directly on your Android device using Termux, the official `openai` Python SDK might fail to install because of Rust dependencies (`jiter`). This backend now uses the standard `requests` library to completely bypass that issue.
 
 1. **Install Python and Git in Termux:**
    ```bash
@@ -74,12 +61,12 @@ If you are running this backend directly on your Android device using Termux, th
    pip install -r requirements.txt
    ```
 
-4. **Configure the API Key:**
+4. **Configure the API Keys:**
    ```bash
    cp .env.example .env
    nano .env
    ```
-   Add your OpenAI API key and save.
+   Add your Gemini API keys as a comma-separated list (`GEMINI_API_KEYS=key1,key2`) and save.
 
 5. **Start the server:**
    ```bash
@@ -87,8 +74,7 @@ If you are running this backend directly on your Android device using Termux, th
    ```
 
 6. **Configure the Android App (Termux Localhost):**
-   When running the backend directly on the same phone in Termux, you *can* use localhost because the server is running on the device itself.
-   Open `ApiClient.kt` in Android Studio and update:
+   When running the backend directly on the same phone in Termux, open `ApiClient.kt` in Android Studio and update:
    ```kotlin
    const val BACKEND_URL = "http://127.0.0.1:5000"
    ```
