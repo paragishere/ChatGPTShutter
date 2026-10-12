@@ -6,12 +6,14 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
 
-load_dotenv()
+# Ensure .env is loaded reliably regardless of the working directory
+dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
+load_dotenv(dotenv_path)
 
 app = Flask(__name__)
 CORS(app)
 
-GEMINI_MODEL = "gemini-2.5-flash"
+GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.6-flash")
 GEMINI_API_URL = (
     "https://generativelanguage.googleapis.com/v1beta/"
     f"models/{GEMINI_MODEL}:generateContent"
@@ -20,7 +22,7 @@ GEMINI_API_URL = (
 def get_api_keys():
     """
     Returns a list of API keys.
-    Supports GEMINI_API_KEYS (comma separated) or GEMINI_API_KEY.
+    Supports GEMINI_API_KEYS (comma separated) or GEMINI_API_KEY as fallback.
     """
     keys_str = os.environ.get("GEMINI_API_KEYS") or os.environ.get("GEMINI_API_KEY")
     if not keys_str:
@@ -99,11 +101,17 @@ def analyze_photo():
     # Loop through configured keys until one succeeds
     for attempt, api_key in enumerate(api_keys):
         try:
+            # Use the secure x-goog-api-key header for Gemini API requests
+            headers = {
+                "x-goog-api-key": api_key,
+                "Content-Type": "application/json"
+            }
+
             response = requests.post(
                 GEMINI_API_URL,
-                params={"key": api_key},
+                headers=headers,
                 json=payload,
-                timeout=60
+                timeout=90
             )
 
             if not response.ok:
@@ -122,7 +130,7 @@ def analyze_photo():
                 last_error_message = message
                 last_status_code = status
 
-                # If Bad Request (400), it's likely a payload issue, no point retrying
+                # If Bad Request (400), it's a malformed payload, no point retrying
                 if status == 400:
                     return jsonify({
                         "response": None,
@@ -197,7 +205,6 @@ def analyze_photo():
         "response": None,
         "error": final_error
     }), last_status_code
-
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=False)

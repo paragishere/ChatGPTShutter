@@ -3,6 +3,7 @@ from unittest.mock import patch, MagicMock
 import app
 import io
 import json
+import os
 
 class TestBackend(unittest.TestCase):
     def setUp(self):
@@ -33,6 +34,10 @@ class TestBackend(unittest.TestCase):
         self.assertEqual(json.loads(response.data)["response"], "Success response")
         self.assertEqual(mock_post.call_count, 1)
 
+        # Verify the secure header is used
+        headers = mock_post.call_args[1]['headers']
+        self.assertEqual(headers["x-goog-api-key"], "key1")
+
     @patch('app.get_api_keys')
     @patch('requests.post')
     def test_fallback_on_429_quota(self, mock_post, mock_get_keys):
@@ -62,6 +67,12 @@ class TestBackend(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(json.loads(response.data)["response"], "Success on second key")
         self.assertEqual(mock_post.call_count, 2)
+
+        # Verify both keys were tried via headers
+        first_call_headers = mock_post.call_args_list[0][1]['headers']
+        second_call_headers = mock_post.call_args_list[1][1]['headers']
+        self.assertEqual(first_call_headers["x-goog-api-key"], "key1")
+        self.assertEqual(second_call_headers["x-goog-api-key"], "key2")
 
     @patch('app.get_api_keys')
     @patch('requests.post')
@@ -146,6 +157,12 @@ class TestBackend(unittest.TestCase):
         response = self.client.post('/api/analyze-photo', data=data, content_type='multipart/form-data')
         self.assertEqual(response.status_code, 500)
         self.assertIn("Gemini API keys are not configured", json.loads(response.data)["error"])
+
+    @patch.dict(os.environ, {"GEMINI_API_KEYS": "  key1,  , key2  ,key3", "GEMINI_API_KEY": "should_be_ignored"})
+    def test_env_parsing_comma_separated(self):
+        # Directly test the get_api_keys parsing logic
+        keys = app.get_api_keys()
+        self.assertEqual(keys, ["key1", "key2", "key3"])
 
 if __name__ == '__main__':
     unittest.main()
